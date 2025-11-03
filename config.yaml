@@ -1,0 +1,17 @@
+# Koa CLI Configuration Example
+# Copy this file to ~/.config/koa-cli/config.yaml and fill in your credentials
+
+# Required: Your Koa username (UH NetID)
+user: mburiek
+
+# Required: Koa hostname
+host: koa.its.hawaii.edu
+
+# Optional: Remote working directory (default: ~/koa-jobs)
+remote_workdir: ~/koa-jobs
+
+# Optional: SSH identity file (omit to use default SSH key)
+# identity_file: ~/.ssh/id_rsa
+
+# Optional: SSH proxy command (for jump hosts)
+# proxy_command: ssh -W %h:%p jumphost.example.com

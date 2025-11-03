@@ -1,0 +1,23 @@
+# Koa CLI Configuration Example
+# Copy this file to ~/.config/koa-cli/config.yaml and fill in your credentials
+
+# Required: Your Koa username (UH NetID)
+user: your_koa_netid
+
+# Required: Koa hostname
+host: koa.its.hawaii.edu
+
+# Remote working directory for code (home directory - 50GB limit)
+# This is where koa-cli syncs your code
+remote_workdir: ~/koa-jobs
+
+# Remote data directory for large outputs (Lustre scratch - large storage)
+# Use this for training results, checkpoints, datasets
+# Access via $KOA_REMOTE_DATA_DIR in SLURM scripts
+remote_data_dir: /mnt/lustre/koa/scratch/your_koa_netid/koa-jobs
+
+# Optional: SSH identity file (omit to use default SSH key)
+# identity_file: ~/.ssh/id_rsa
+
+# Optional: SSH proxy command (for jump hosts)
+# proxy_command: ssh -W %h:%p jumphost.example.com

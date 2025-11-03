@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "koa-cli"
+version = "0.1.0"
+description = "Command-line tool for submitting jobs to Koa HPC cluster"
+readme = "README.md"
+authors = [
+    {name = "Koa CLI Contributors"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Clustering",
+]
+keywords = ["hpc", "slurm", "cluster", "koa", "cli"]
+
+dependencies = [
+    "PyYAML>=6.0.1",
+    "rich>=13.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/michaelburiek/koa-ml"
+Repository = "https://github.com/michaelburiek/koa-ml"
+Issues = "https://github.com/michaelburiek/koa-ml/issues"
+
+[project.scripts]
+koa = "koa_cli.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+koa_cli = ["py.typed"]
