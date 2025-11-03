@@ -301,6 +301,221 @@ def list_jobs(config: Config) -> str:
     return result.stdout
 
 
+def queue_status(config: Config, partition: Optional[str] = None) -> str:
+    """
+    Show the full queue status, highlighting the user's jobs.
+
+    Args:
+        config: Koa configuration
+        partition: Optional partition filter (e.g., "kill-shared")
+
+    Returns:
+        Formatted queue status output
+    """
+    cmd = [
+        "squeue",
+        "-o",
+        r"%i|%u|%j|%T|%M|%l|%D|%C|%m|%R",
+        "--sort=P,t,-p",  # Sort by priority, time, descending priority
+    ]
+
+    if partition:
+        cmd.extend(["-p", partition])
+
+    result = run_ssh(config, cmd, capture_output=True)
+
+    # Add header and highlight user's jobs
+    lines = result.stdout.strip().split('\n') if result.stdout else []
+    if not lines:
+        return "No jobs in queue\n"
+
+    output = []
+    output.append("=" * 100)
+    output.append(f"Queue Status{f' (partition: {partition})' if partition else ''}")
+    output.append("=" * 100)
+
+    # Process each line and highlight user's jobs
+    for i, line in enumerate(lines):
+        if i == 0:
+            # Header line
+            output.append(line)
+            output.append("-" * 100)
+        else:
+            # Check if this is the user's job
+            parts = line.split('|')
+            if len(parts) > 1 and parts[1] == config.user:
+                output.append(f">>> {line} <<<")  # Highlight user's jobs
+            else:
+                output.append(line)
+
+    output.append("=" * 100)
+    output.append(f"Your jobs are marked with >>> <<<")
+    output.append("=" * 100)
+
+    return '\n'.join(output) + '\n'
+
+
+def build_environment(
+    config: Config,
+    repo_name: str,
+    requirements_file: Optional[Path] = None,
+    rebuild: bool = False,
+) -> None:
+    """
+    Build a persistent virtual environment for a repository on Koa.
+
+    Args:
+        config: Koa configuration
+        repo_name: Name of the repository
+        requirements_file: Optional path to requirements.txt or setup.py
+        rebuild: If True, remove existing venv and rebuild from scratch
+
+    The environment will be created at:
+    /mnt/lustre/koa/scratch/$USER/koa-jobs/<repo-name>/.venv
+    """
+    # Code directory is in home (for syncing)
+    remote_repo_dir = config.remote_workdir / repo_name
+
+    # But venv goes in Lustre scratch for space
+    remote_venv_dir = f"/mnt/lustre/koa/scratch/{config.user}/koa-jobs/{repo_name}/.venv"
+
+    print(f"Building environment for {repo_name} on Koa...")
+    print(f"Location: {config.login}:{remote_venv_dir}")
+
+    # Build the setup script
+    setup_script_lines = [
+        "set -e",
+        "set -u",
+        "set -o pipefail",
+        "",
+        f"REPO_DIR='{remote_repo_dir}'",
+        f"VENV_DIR='{remote_venv_dir}'",
+        "",
+        "echo '================================================================'",
+        "echo 'Building Python Environment on Koa'",
+        "echo '================================================================'",
+        "echo \"Repository: ${REPO_DIR}\"",
+        "echo \"Environment: ${VENV_DIR}\"",
+        "echo ''",
+        "",
+        "# Check if repo directory exists",
+        "if [ ! -d \"${REPO_DIR}\" ]; then",
+        "  echo 'Error: Repository directory does not exist!'",
+        "  echo 'Run: koa sync'",
+        "  exit 1",
+        "fi",
+        "",
+        "cd \"${REPO_DIR}\"",
+        "",
+    ]
+
+    if rebuild:
+        setup_script_lines.extend([
+            "# Remove existing environment",
+            "if [ -d \"${VENV_DIR}\" ]; then",
+            "  echo 'Removing existing environment...'",
+            "  rm -rf \"${VENV_DIR}\"",
+            "  echo '✓ Removed'",
+            "fi",
+            "",
+        ])
+
+    setup_script_lines.extend([
+        "# Load Python module",
+        "module load lang/Python/3.11.5-GCCcore-13.2.0",
+        "echo \"✓ Loaded Python $(python --version)\"",
+        "echo ''",
+        "",
+        "# Ensure parent directory exists",
+        "mkdir -p \"$(dirname ${VENV_DIR})\"",
+        "",
+        "# Configure pip to use Lustre for temp files (not /tmp which is small)",
+        f"export TMPDIR=\"/mnt/lustre/koa/scratch/{config.user}/tmp\"",
+        "mkdir -p \"${TMPDIR}\"",
+        "echo \"✓ Using ${TMPDIR} for temporary files\"",
+        "echo ''",
+        "",
+        "# Create virtual environment if it doesn't exist",
+        "if [ ! -d \"${VENV_DIR}\" ]; then",
+        "  echo 'Creating virtual environment...'",
+        "  python -m venv \"${VENV_DIR}\"",
+        "  chmod -R u+rwx \"${VENV_DIR}\"",
+        "  echo '✓ Virtual environment created'",
+        "else",
+        "  echo '✓ Virtual environment already exists'",
+        "fi",
+        "",
+        "# Activate environment",
+        "source \"${VENV_DIR}/bin/activate\"",
+        "echo '✓ Environment activated'",
+        "echo ''",
+        "",
+        "# Upgrade pip",
+        "echo 'Upgrading pip...'",
+        "python -m pip install --quiet 'pip<24.1'",
+        "echo '✓ pip upgraded'",
+        "echo ''",
+        "",
+    ])
+
+    # Install from requirements or setup.py if provided
+    if requirements_file:
+        setup_script_lines.extend([
+            f"# Install from {requirements_file.name}",
+            f"if [ -f \"{requirements_file.name}\" ]; then",
+            f"  echo 'Installing from {requirements_file.name}...'",
+            f"  python -m pip install -r \"{requirements_file.name}\"",
+            "  echo '✓ Dependencies installed'",
+            "else",
+            f"  echo 'Warning: {requirements_file.name} not found'",
+            "fi",
+            "echo ''",
+            "",
+        ])
+    else:
+        # Try to detect and install from common files
+        setup_script_lines.extend([
+            "# Install project dependencies",
+            "if [ -f 'setup.py' ] || [ -f 'pyproject.toml' ]; then",
+            "  echo 'Installing project in editable mode...'",
+            "  python -m pip install -e .",
+            "  echo '✓ Project installed'",
+            "elif [ -f 'requirements.txt' ]; then",
+            "  echo 'Installing from requirements.txt...'",
+            "  python -m pip install -r requirements.txt",
+            "  echo '✓ Requirements installed'",
+            "else",
+            "  echo 'No setup.py, pyproject.toml, or requirements.txt found'",
+            "  echo 'Environment created but no dependencies installed'",
+            "fi",
+            "echo ''",
+            "",
+        ])
+
+    setup_script_lines.extend([
+        "# Show installed packages",
+        "echo 'Installed packages:'",
+        "python -m pip list",
+        "echo ''",
+        "",
+        "echo '================================================================'",
+        "echo '✓ Environment ready!'",
+        "echo '================================================================'",
+        "echo \"To use in SLURM scripts:\"",
+        "echo \"  source ${VENV_DIR}/bin/activate\"",
+        "echo '================================================================'",
+    ])
+
+    setup_script = "\n".join(setup_script_lines)
+
+    # Execute the setup script on Koa
+    run_ssh(
+        config,
+        ["bash", "-c", setup_script],
+        capture_output=False,  # Show output to user
+    )
+
+
 def run_health_checks(config: Config) -> str:
     """Run basic connectivity and SLURM health checks."""
     result = run_ssh(
