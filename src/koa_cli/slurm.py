@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 from .config import Config
+from .formatting import format_jobs_table, format_queue_table
 from .ssh import SSHError, copy_to_remote, run_ssh
 
 SBATCH_JOB_ID_PATTERN = re.compile(r"Submitted batch job (\d+)")
@@ -245,7 +246,10 @@ def submit_job(
         args.extend(["--partition", DEFAULT_PARTITION])
 
     # Auto-select best GPU if enabled and no GPU already specified
-    if auto_gpu and not _has_gres_flag(sbatch_args_list):
+    script_gpu_count = parse_gpu_count_from_script(local_job_script)
+    script_sets_gres = script_gpu_count is not None
+
+    if auto_gpu and not _has_gres_flag(sbatch_args_list) and not script_sets_gres:
         # Determine partition for GPU query
         partition = DEFAULT_PARTITION
         for i, arg in enumerate(sbatch_args_list):
@@ -255,9 +259,7 @@ def submit_job(
                 partition = arg.split("=", 1)[1]
 
         # Parse GPU count from the script itself
-        gpu_count = parse_gpu_count_from_script(local_job_script)
-        if gpu_count is None:
-            gpu_count = 1  # Default to 1 if not specified in script
+        gpu_count = script_gpu_count or 1  # Default to 1 if not specified in script
 
         best_gpu = select_best_gpu(config, partition)
 
@@ -266,6 +268,8 @@ def submit_job(
             print(f"Requesting {gpu_count} x {best_gpu} GPUs (from script)")
 
         args.extend(["--gres", f"gpu:{best_gpu}:{gpu_count}"])
+    elif auto_gpu and script_sets_gres:
+        print("Detected #SBATCH --gres in script; skipping auto GPU selection.")
 
     if sbatch_args_list:
         args.extend(sbatch_args_list)
@@ -285,7 +289,7 @@ def cancel_job(config: Config, job_id: str) -> None:
     run_ssh(config, ["scancel", job_id])
 
 
-def list_jobs(config: Config) -> str:
+def list_jobs(config: Config) -> None:
     """List all active jobs for the configured user."""
     result = run_ssh(
         config,
@@ -298,19 +302,16 @@ def list_jobs(config: Config) -> str:
         ],
         capture_output=True,
     )
-    return result.stdout
+    format_jobs_table(result.stdout, config.user)
 
 
-def queue_status(config: Config, partition: Optional[str] = None) -> str:
+def queue_status(config: Config, partition: Optional[str] = None) -> None:
     """
     Show the full queue status, highlighting the user's jobs.
 
     Args:
         config: Koa configuration
         partition: Optional partition filter (e.g., "kill-shared")
-
-    Returns:
-        Formatted queue status output
     """
     cmd = [
         "squeue",
@@ -323,36 +324,7 @@ def queue_status(config: Config, partition: Optional[str] = None) -> str:
         cmd.extend(["-p", partition])
 
     result = run_ssh(config, cmd, capture_output=True)
-
-    # Add header and highlight user's jobs
-    lines = result.stdout.strip().split('\n') if result.stdout else []
-    if not lines:
-        return "No jobs in queue\n"
-
-    output = []
-    output.append("=" * 100)
-    output.append(f"Queue Status{f' (partition: {partition})' if partition else ''}")
-    output.append("=" * 100)
-
-    # Process each line and highlight user's jobs
-    for i, line in enumerate(lines):
-        if i == 0:
-            # Header line
-            output.append(line)
-            output.append("-" * 100)
-        else:
-            # Check if this is the user's job
-            parts = line.split('|')
-            if len(parts) > 1 and parts[1] == config.user:
-                output.append(f">>> {line} <<<")  # Highlight user's jobs
-            else:
-                output.append(line)
-
-    output.append("=" * 100)
-    output.append(f"Your jobs are marked with >>> <<<")
-    output.append("=" * 100)
-
-    return '\n'.join(output) + '\n'
+    format_queue_table(result.stdout, config.user, partition)
 
 
 def build_environment(

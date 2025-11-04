@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import Config, load_config
+from .help_formatter import print_command_help, print_help
 from .setup import run_setup
 from .slurm import build_environment, cancel_job, list_jobs, queue_status, run_health_checks, submit_job
 from .ssh import SSHError, sync_directory_to_remote
@@ -52,22 +53,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="koa",
         description="Command-line tool for submitting jobs to Koa HPC cluster.",
+        add_help=False,  # We'll handle help ourselves
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("-h", "--help", action="store_true", help="Show this help message")
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     # koa setup
-    subparsers.add_parser("setup", help="Interactive setup wizard for first-time configuration.")
+    subparsers.add_parser("setup", help="Interactive setup wizard for first-time configuration.", add_help=False)
 
     # koa check
-    check_parser = subparsers.add_parser("check", help="Run Koa connectivity health checks.")
+    check_parser = subparsers.add_parser("check", help="Run Koa connectivity health checks.", add_help=False)
+    check_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(check_parser)
 
     # koa jobs
-    jobs_parser = subparsers.add_parser("jobs", help="List active jobs for the configured user.")
+    jobs_parser = subparsers.add_parser("jobs", help="List active jobs for the configured user.", add_help=False)
+    jobs_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(jobs_parser)
 
     # koa queue
-    queue_parser = subparsers.add_parser("queue", help="Show full queue status with your jobs highlighted.")
+    queue_parser = subparsers.add_parser("queue", help="Show full queue status with your jobs highlighted.", add_help=False)
+    queue_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(queue_parser)
     queue_parser.add_argument(
         "--partition",
@@ -75,12 +81,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # koa cancel <job_id>
-    cancel_parser = subparsers.add_parser("cancel", help="Cancel a job by ID.")
+    cancel_parser = subparsers.add_parser("cancel", help="Cancel a job by ID.", add_help=False)
+    cancel_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(cancel_parser)
     cancel_parser.add_argument("job_id", help="SLURM job ID to cancel.")
 
     # koa submit <job_script>
-    submit_parser = subparsers.add_parser("submit", help="Submit a job script via sbatch.")
+    submit_parser = subparsers.add_parser("submit", help="Submit a job script via sbatch.", add_help=False)
+    submit_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(submit_parser)
     submit_parser.add_argument("job_script", type=Path, help="Path to the local job script.")
     submit_parser.add_argument("--remote-name", help="Override the filename on Koa.")
@@ -109,8 +117,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # koa sync
     sync_parser = subparsers.add_parser(
-        "sync", help="Sync the current directory to the remote Koa workdir."
+        "sync", help="Sync the current directory to the remote Koa workdir.", add_help=False
     )
+    sync_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(sync_parser)
     sync_parser.add_argument(
         "--path",
@@ -129,7 +138,9 @@ def _build_parser() -> argparse.ArgumentParser:
     build_env_parser = subparsers.add_parser(
         "build-env",
         help="Build a persistent Python environment for the current repo on Koa.",
+        add_help=False,
     )
+    build_env_parser.add_argument("-h", "--help", action="store_true", help="Show help for this command")
     _add_common_arguments(build_env_parser)
     build_env_parser.add_argument(
         "--requirements",
@@ -195,13 +206,13 @@ def _cancel(args: argparse.Namespace, config: Config) -> int:
 
 def _jobs(_: argparse.Namespace, config: Config) -> int:
     """Handle 'koa jobs' command."""
-    print(list_jobs(config), end="")
+    list_jobs(config)
     return 0
 
 
 def _queue(args: argparse.Namespace, config: Config) -> int:
     """Handle 'koa queue' command."""
-    print(queue_status(config, partition=args.partition), end="")
+    queue_status(config, partition=args.partition)
     return 0
 
 
@@ -265,7 +276,37 @@ def _build_env(args: argparse.Namespace, config: Config) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     """Main CLI entry point."""
     parser = _build_parser()
+
+    # Check for help flag before parsing
+    check_argv = argv if argv is not None else sys.argv[1:]
+    if "-h" in check_argv or "--help" in check_argv:
+        # Find command if present
+        command = None
+        for arg in check_argv:
+            if not arg.startswith("-"):
+                command = arg
+                break
+
+        if command and command in ["setup", "check", "jobs", "queue", "cancel", "submit", "sync", "build-env"]:
+            print_command_help(parser, command)
+        else:
+            print_help(parser)
+        return 0
+
     args = parser.parse_args(argv)
+
+    # Handle help
+    if hasattr(args, "help") and args.help:
+        if args.command:
+            print_command_help(parser, args.command)
+        else:
+            print_help(parser)
+        return 0
+
+    # No command provided
+    if not args.command:
+        print_help(parser)
+        return 1
 
     # Setup doesn't need config
     if args.command == "setup":
