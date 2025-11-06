@@ -334,25 +334,27 @@ def build_environment(
     rebuild: bool = False,
 ) -> None:
     """
-    Build a persistent virtual environment for a repository on Koa.
+    Build a persistent conda environment for a repository on Koa.
 
     Args:
         config: Koa configuration
         repo_name: Name of the repository
-        requirements_file: Optional path to requirements.txt or setup.py
-        rebuild: If True, remove existing venv and rebuild from scratch
+        requirements_file: Optional path to requirements.txt
+        rebuild: If True, remove existing environment and rebuild from scratch
 
-    The environment will be created at:
-    /mnt/lustre/koa/scratch/$USER/koa-jobs/<repo-name>/.venv
+    The environment will be created as a conda environment named:
+    <repo-name>-env
+
+    This uses a self-installed miniconda in ~/miniconda3
     """
     # Code directory is in home (for syncing)
     remote_repo_dir = config.remote_workdir / repo_name
 
-    # But venv goes in Lustre scratch for space
-    remote_venv_dir = f"/mnt/lustre/koa/scratch/{config.user}/koa-jobs/{repo_name}/.venv"
+    # Conda environment name (replace dashes/underscores for compatibility)
+    env_name = f"{repo_name.replace('-', '_').replace('.', '_')}_env"
 
-    print(f"Building environment for {repo_name} on Koa...")
-    print(f"Location: {config.login}:{remote_venv_dir}")
+    print(f"Building conda environment for {repo_name} on Koa...")
+    print(f"Environment name: {env_name}")
 
     # Build the setup script
     setup_script_lines = [
@@ -361,13 +363,13 @@ def build_environment(
         "set -o pipefail",
         "",
         f"REPO_DIR='{remote_repo_dir}'",
-        f"VENV_DIR='{remote_venv_dir}'",
+        f"ENV_NAME='{env_name}'",
         "",
         "echo '================================================================'",
-        "echo 'Building Python Environment on Koa'",
+        "echo 'Building Conda Environment on Koa'",
         "echo '================================================================'",
         "echo \"Repository: ${REPO_DIR}\"",
-        "echo \"Environment: ${VENV_DIR}\"",
+        "echo \"Environment name: ${ENV_NAME}\"",
         "echo ''",
         "",
         "# Check if repo directory exists",
@@ -381,50 +383,78 @@ def build_environment(
         "",
     ]
 
+    setup_script_lines.extend([
+        "# Install Miniconda if not already present",
+        f"MINICONDA_DIR=\"/mnt/lustre/koa/scratch/{config.user}/miniconda3\"",
+        "if [ ! -d \"${MINICONDA_DIR}\" ]; then",
+        "  echo 'Installing Miniconda3 (one-time setup)...'",
+        "  echo 'This will take a few minutes...'",
+        "  ",
+        "  # Download to scratch space (has more space and better permissions)",
+        f"  TMPDIR=\"/mnt/lustre/koa/scratch/{config.user}/tmp\"",
+        "  mkdir -p \"${TMPDIR}\"",
+        "  wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O \"${TMPDIR}/miniconda.sh\"",
+        "  ",
+        "  # Install to Lustre scratch space",
+        "  bash \"${TMPDIR}/miniconda.sh\" -b -p \"${MINICONDA_DIR}\"",
+        "  rm \"${TMPDIR}/miniconda.sh\"",
+        "  echo '✓ Miniconda installed'",
+        "else",
+        "  echo '✓ Miniconda already installed'",
+        "fi",
+        "",
+        "# Initialize conda for this shell session",
+        "source \"${MINICONDA_DIR}/etc/profile.d/conda.sh\"",
+        "echo '✓ Conda initialized'",
+        "echo ''",
+        "",
+        "# Configure conda to use only conda-forge (no TOS required)",
+        "conda config --set channel_priority strict",
+        "conda config --remove channels defaults 2>/dev/null || true",
+        "conda config --add channels conda-forge",
+        "echo '✓ Conda configured to use conda-forge only'",
+        "echo ''",
+        "",
+    ])
+
     if rebuild:
         setup_script_lines.extend([
             "# Remove existing environment",
-            "if [ -d \"${VENV_DIR}\" ]; then",
+            "echo 'Checking for existing environment...'",
+            "if conda env list | grep -q \"^${ENV_NAME} \"; then",
             "  echo 'Removing existing environment...'",
-            "  rm -rf \"${VENV_DIR}\"",
+            "  conda env remove -n \"${ENV_NAME}\" -y",
             "  echo '✓ Removed'",
             "fi",
             "",
         ])
 
     setup_script_lines.extend([
-        "# Load Python module",
-        "module load lang/Python/3.11.5-GCCcore-13.2.0",
-        "echo \"✓ Loaded Python $(python --version)\"",
-        "echo ''",
-        "",
-        "# Ensure parent directory exists",
-        "mkdir -p \"$(dirname ${VENV_DIR})\"",
-        "",
-        "# Configure pip to use Lustre for temp files (not /tmp which is small)",
-        f"export TMPDIR=\"/mnt/lustre/koa/scratch/{config.user}/tmp\"",
-        "mkdir -p \"${TMPDIR}\"",
-        "echo \"✓ Using ${TMPDIR} for temporary files\"",
-        "echo ''",
-        "",
-        "# Create virtual environment if it doesn't exist",
-        "if [ ! -d \"${VENV_DIR}\" ]; then",
-        "  echo 'Creating virtual environment...'",
-        "  python -m venv \"${VENV_DIR}\"",
-        "  chmod -R u+rwx \"${VENV_DIR}\"",
-        "  echo '✓ Virtual environment created'",
+        "# Check if environment already exists",
+        "if conda env list | grep -q \"^${ENV_NAME} \"; then",
+        "  echo '✓ Conda environment already exists'",
+        "  echo 'To rebuild, use: koa build-env --rebuild'",
         "else",
-        "  echo '✓ Virtual environment already exists'",
+        "  echo 'Creating conda environment with Python 3.11...'",
+        "  echo 'This may take several minutes...'",
+        "  echo ''",
+        "  ",
+        "  # Create conda environment with Python 3.11 using only conda-forge",
+        "  conda create -n \"${ENV_NAME}\" --override-channels -c conda-forge python=3.11 -y",
+        "  ",
+        "  echo ''",
+        "  echo '✓ Conda environment created'",
         "fi",
         "",
         "# Activate environment",
-        "source \"${VENV_DIR}/bin/activate\"",
+        "conda activate \"${ENV_NAME}\"",
         "echo '✓ Environment activated'",
+        "echo \"Python version: $(python --version)\"",
         "echo ''",
         "",
         "# Upgrade pip",
         "echo 'Upgrading pip...'",
-        "python -m pip install --quiet 'pip<24.1'",
+        "python -m pip install --upgrade pip",
         "echo '✓ pip upgraded'",
         "echo ''",
         "",
@@ -465,25 +495,47 @@ def build_environment(
         ])
 
     setup_script_lines.extend([
-        "# Show installed packages",
-        "echo 'Installed packages:'",
-        "python -m pip list",
+        "# Show installed packages summary",
+        "echo 'Key installed packages:'",
+        "python -m pip list | grep -E '(torch|transformers|vllm|trl|datasets)' || echo 'None of the expected packages found'",
         "echo ''",
         "",
         "echo '================================================================'",
         "echo '✓ Environment ready!'",
         "echo '================================================================'",
-        "echo \"To use in SLURM scripts:\"",
-        "echo \"  source ${VENV_DIR}/bin/activate\"",
+        "echo \"Environment name: ${ENV_NAME}\"",
+        "echo \"Miniconda location: ${MINICONDA_DIR}\"",
+        "echo ''",
+        "echo \"To use in SLURM scripts, add these lines:\"",
+        f"echo \"  source /mnt/lustre/koa/scratch/{config.user}/miniconda3/etc/profile.d/conda.sh\"",
+        "echo \"  conda activate ${ENV_NAME}\"",
+        "echo ''",
+        "echo \"To activate manually:\"",
+        f"echo \"  source /mnt/lustre/koa/scratch/{config.user}/miniconda3/etc/profile.d/conda.sh\"",
+        "echo \"  conda activate ${ENV_NAME}\"",
         "echo '================================================================'",
     ])
 
     setup_script = "\n".join(setup_script_lines)
 
-    # Execute the setup script on Koa
+    # Execute the setup script on Koa via an interactive compute node
+    # Login nodes often have permission restrictions for installing software
+    print("Requesting compute node for environment build...")
+    print("(This ensures proper permissions and resources)")
+
+    srun_command = [
+        "srun",
+        "--partition=sandbox",
+        "--mem=8G",
+        "--cpus-per-task=2",
+        "--time=60",
+        "--pty",
+        "bash", "-c", setup_script
+    ]
+
     run_ssh(
         config,
-        ["bash", "-c", setup_script],
+        srun_command,
         capture_output=False,  # Show output to user
     )
 
